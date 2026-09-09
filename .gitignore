@@ -1,6 +1,9 @@
 config/smoke.env
+config/phase1.env
 samples/*
 !samples/.gitkeep
+data/
 __pycache__/
 *.pyc
 .venv/
+*.raw

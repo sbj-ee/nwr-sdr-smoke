@@ -1,100 +1,130 @@
-# NWR SDR smoke test (Phase 0)
+# NWR SDR — Protectli NOAA Weather Radio
 
-Minimal check that the RTL-SDR on the Protectli Linux host can receive
-NOAA Weather Radio. This is **not** the full alert pipeline (no SAME,
-no SQLite, no Whisper). Design target:
+Phase 0 smoke test + Phase 1 SAME listener for an RTL-SDR on a Protectli
+Linux host. Design brief:
 [NOAA SDR Weather Alert Pipeline Design v2](https://drive.google.com/file/d/16R4MZVRLa44BPlTqiuuWO2KOPG7w5Sc9).
 
-Madison baseline from that brief: **WXJ-87 at 162.550 MHz**.
+Madison baseline: **WXJ-87 at 162.550 MHz**. Dane FIPS `055025`.
 
 Public repo: https://github.com/sbj-ee/nwr-sdr-smoke
 
-## What it does
+Home-security SDR stays on its own machine. Do not move it here. Do not
+buy another dongle for this.
 
-1. Confirms the RTL-SDR is visible (`rtl_test` / `lsusb`).
-2. Detects in-kernel `rtl2832` / `dvb_usb_rtl28xxu` ownership (`/dev/swradio0`)
-   and prints an aggressive unload path — librtlsdr cannot open the stick
-   until those modules are gone.
-3. Detects libusb **error -3** (permission) and prints the udev / `plugdev` fix;
-   optional `USE_SUDO_RTL=1` for a first claim before udev is installed.
-4. Records a short NBFM clip on 162.550 MHz with `rtl_fm` + `sox`.
-5. Scores the WAV (RMS / peak) so you can tell voice/carrier from dead air.
+## Status
+
+| Phase | What | State |
+|------|------|--------|
+| 0 | `rtl_test` + short WAV + energy score | done (`scripts/smoke_test.sh`) |
+| 1 | Continuous listen, multimon-ng SAME, clip cut, SQLite | done (`phase1/listen.py`) |
+| 2 | Local Whisper transcript | not started |
+| 3 | Notify webhook / UI | not started |
 
 ## Packages (Protectli)
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y rtl-sdr sox python3 git psmisc
+sudo apt-get install -y rtl-sdr sox python3 git psmisc multimon-ng sqlite3
 git clone https://github.com/sbj-ee/nwr-sdr-smoke.git
 cd nwr-sdr-smoke
-cp config/smoke.env.example config/smoke.env
 ```
 
-`psmisc` provides `fuser` (used by the unload helper).
+### Kernel DVB vs librtlsdr (required)
 
-## Protectli: two common failures
-
-### A. Kernel still holds the stick
-
-Symptoms: `rtl2832_sdr` / `dvb_usb_rtl28xxu` still in `lsmod`, `/dev/swradio0`
-present, `modprobe -r ...` appears to do nothing.
-
-```bash
-sudo ./scripts/unload_kernel_sdr.sh
-# or let the smoke test call it:
-AUTO_UNLOAD=1 ./scripts/smoke_test.sh
-```
-
-Permanent (do **not** run this on the home-security SDR host):
+Ubuntu’s in-kernel `rtl2832_sdr` / `dvb_usb_rtl28xxu` stack creates
+`/dev/swradio0` and blocks `rtl_fm`. Permanent fix on the Protectli NWR
+host only:
 
 ```bash
 sudo ./scripts/blacklist_kernel_sdr.sh
 sudo reboot
 ```
 
-### B. `usb_open error -3` (permissions / missing udev)
+Session-only:
 
-USB is present (`lsusb` shows `0bda:2838`) but your user cannot open it.
+```bash
+sudo ./scripts/unload_kernel_sdr.sh
+```
+
+### Permissions (libusb error -3)
 
 ```bash
 sudo ./scripts/install_udev_rules.sh "$USER"
-# unplug/replug the stick (or reboot), then log out/in for plugdev
+# unplug/replug stick; log out/in for plugdev
+```
+
+Interim: `USE_SUDO_RTL=1` on smoke test / Phase 1.
+
+## Phase 0 — smoke test
+
+```bash
+cp config/smoke.env.example config/smoke.env
 ./scripts/smoke_test.sh
+# or: AUTO_UNLOAD=1 USE_SUDO_RTL=1 ./scripts/smoke_test.sh
 ```
 
-First claim before udev is sorted:
+Success: `PASS: audio energy looks like live RF` and a WAV under `samples/`.
+
+## Phase 1 — SAME + clip + SQLite
+
+Listens continuously on the configured NWR frequency, runs
+`multimon-ng -a SAME` on the demod audio, cuts a WAV from a few seconds
+before the `ZCZC` header until `NNNN` (or `MAX_CLIP_S`), and inserts a
+row into SQLite (`data/alerts.db` by default). Dedups by
+event + FIPS + issue time + frequency within the purge window.
 
 ```bash
-USE_SUDO_RTL=1 ./scripts/smoke_test.sh
+cp config/phase1.env.example config/phase1.env
+# edit REQUIRE_COUNTY_FIPS / DATA_DIR / USE_SUDO_RTL if needed
+./scripts/run_phase1.sh
 ```
 
-Home-security SDR stays on its own machine. Do not move it here.
-
-## Run
+Dry-run (log SAME only, no DB/WAV):
 
 ```bash
-./scripts/smoke_test.sh
+./scripts/run_phase1.sh --dry-run
 ```
 
-Optional overrides:
+Query recent rows:
 
 ```bash
-DURATION_S=30 GAIN=40 ./scripts/smoke_test.sh
-AUTO_UNLOAD=1 USE_SUDO_RTL=1 ./scripts/smoke_test.sh
-DEVICE_INDEX=0 FREQ_HZ=162550000 ./scripts/smoke_test.sh
+./scripts/query_alerts.sh
 ```
 
-Output WAV lands under `samples/` (gitignored).
+Optional systemd (edit `User=` / paths first):
 
-## Success
+```bash
+sudo cp systemd/nwr-alerts.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now nwr-alerts.service
+journalctl -u nwr-alerts.service -f
+```
 
-- `rtl_test -t` opens the R820T / RTL2832U (no error -3, no busy).
-- A WAV is written under `samples/`.
-- `scripts/check_audio.py` prints `PASS` (RMS/peak above floors in
-  `config/smoke.env`).
-- Optional ear check: `play samples/*.wav`.
+### Phase 1 success
 
-## Not in this smoke test
+- Process stays up; `rtl_fm` does not EOF immediately.
+- On a SAME burst (Wednesday ~noon MKX **RWT** is the easy test), logs show
+  `multimon: EAS: ZCZC-...` then later `NNNN`.
+- A WAV appears under `data/audio/`.
+- `./scripts/query_alerts.sh` shows a row with event / FIPS / `audio_path`.
+- Re-broadcast within the purge window logs as duplicate (same `dedup_key`).
 
-SAME / multimon-ng, clip cutting, SQLite, Whisper, systemd service,
-serial-based `/dev/nwr_sdr` binding. Those are Phase 1+ in the design brief.
+## Layout
+
+```
+scripts/smoke_test.sh          Phase 0
+scripts/unload_kernel_sdr.sh   free /dev/swradio0
+scripts/blacklist_kernel_sdr.sh
+scripts/install_udev_rules.sh
+scripts/run_phase1.sh
+scripts/query_alerts.sh
+phase1/listen.py               Phase 1 supervisor
+phase1/same.py                 SAME parse
+phase1/db.py                   SQLite
+config/*.env.example
+udev/99-rtl-sdr-nwr.rules
+systemd/nwr-alerts.service
+```
+
+No API tokens or passwords are required for Phase 0/1. Keep
+`config/*.env` out of git (gitignored).

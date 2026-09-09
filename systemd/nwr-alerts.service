@@ -1,0 +1,18 @@
+[Unit]
+Description=NWR SAME alert listener (Phase 1)
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=CHANGE_ME
+WorkingDirectory=/home/CHANGE_ME/NOAA/nwr-sdr-smoke
+EnvironmentFile=-/home/CHANGE_ME/NOAA/nwr-sdr-smoke/config/phase1.env
+ExecStart=/usr/bin/python3 /home/CHANGE_ME/NOAA/nwr-sdr-smoke/phase1/listen.py
+Restart=on-failure
+RestartSec=5
+# Uncomment if USE_SUDO_RTL is still required:
+# NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target
