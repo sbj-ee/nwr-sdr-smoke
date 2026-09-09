@@ -7,58 +7,72 @@ no SQLite, no Whisper). Design target:
 
 Madison baseline from that brief: **WXJ-87 at 162.550 MHz**.
 
+Public repo: https://github.com/sbj-ee/nwr-sdr-smoke
+
 ## What it does
 
 1. Confirms the RTL-SDR is visible (`rtl_test` / `lsusb`).
-2. Warns if the in-kernel `rtl2832` / `dvb_usb_rtl28xxu` stack still owns
-   the stick (common when `swradio0` is present) — librtlsdr cannot
-   open it until those modules are unloaded or blacklisted.
-3. Records a short NBFM clip on 162.550 MHz with `rtl_fm` + `sox`.
-4. Scores the WAV (RMS / peak) so you can tell voice/carrier from dead air
-   without listening, then prints where the file landed.
+2. Detects in-kernel `rtl2832` / `dvb_usb_rtl28xxu` ownership (`/dev/swradio0`)
+   and prints an aggressive unload path — librtlsdr cannot open the stick
+   until those modules are gone.
+3. Detects libusb **error -3** (permission) and prints the udev / `plugdev` fix;
+   optional `USE_SUDO_RTL=1` for a first claim before udev is installed.
+4. Records a short NBFM clip on 162.550 MHz with `rtl_fm` + `sox`.
+5. Scores the WAV (RMS / peak) so you can tell voice/carrier from dead air.
 
 ## Packages (Protectli)
 
-Debian/Ubuntu:
-
 ```bash
 sudo apt-get update
-sudo apt-get install -y rtl-sdr sox python3
+sudo apt-get install -y rtl-sdr sox python3 git psmisc
+git clone https://github.com/sbj-ee/nwr-sdr-smoke.git
+cd nwr-sdr-smoke
+cp config/smoke.env.example config/smoke.env
 ```
 
-Confirm the stick:
+`psmisc` provides `fuser` (used by the unload helper).
+
+## Protectli: two common failures
+
+### A. Kernel still holds the stick
+
+Symptoms: `rtl2832_sdr` / `dvb_usb_rtl28xxu` still in `lsmod`, `/dev/swradio0`
+present, `modprobe -r ...` appears to do nothing.
 
 ```bash
-lsusb | grep -i -E 'Realtek|RTL|2838|0bda'
-rtl_test -t
+sudo ./scripts/unload_kernel_sdr.sh
+# or let the smoke test call it:
+AUTO_UNLOAD=1 ./scripts/smoke_test.sh
 ```
 
-If `rtl_test` fails with “usb_claim_interface error” / “device or
-resource busy”, the kernel driver still holds the dongle. Either:
-
-```bash
-# one-shot for this session
-sudo modprobe -r dvb_usb_rtl28xxu rtl2832_sdr rtl2832 dvb_usb_v2 2>/dev/null || true
-sudo modprobe -r rtl2832_sdr rtl2832 2>/dev/null || true
-```
-
-or install the blacklist helper in this repo and reboot:
+Permanent (do **not** run this on the home-security SDR host):
 
 ```bash
 sudo ./scripts/blacklist_kernel_sdr.sh
 sudo reboot
 ```
 
-Home-security SDR stays on its own machine. Do not move it here.
+### B. `usb_open error -3` (permissions / missing udev)
 
-## Run (Protectli)
-
-Copy this directory onto the Protectli (scp/rsync/git clone — whatever
-you use). Then:
+USB is present (`lsusb` shows `0bda:2838`) but your user cannot open it.
 
 ```bash
-cd /path/to/nwr-sdr-smoke
-cp config/smoke.env.example config/smoke.env   # edit if needed
+sudo ./scripts/install_udev_rules.sh "$USER"
+# unplug/replug the stick (or reboot), then log out/in for plugdev
+./scripts/smoke_test.sh
+```
+
+First claim before udev is sorted:
+
+```bash
+USE_SUDO_RTL=1 ./scripts/smoke_test.sh
+```
+
+Home-security SDR stays on its own machine. Do not move it here.
+
+## Run
+
+```bash
 ./scripts/smoke_test.sh
 ```
 
@@ -66,24 +80,21 @@ Optional overrides:
 
 ```bash
 DURATION_S=30 GAIN=40 ./scripts/smoke_test.sh
+AUTO_UNLOAD=1 USE_SUDO_RTL=1 ./scripts/smoke_test.sh
 DEVICE_INDEX=0 FREQ_HZ=162550000 ./scripts/smoke_test.sh
 ```
 
-Output WAV lands under `samples/` (gitignored). Success criteria are
-printed at the end of the script.
+Output WAV lands under `samples/` (gitignored).
 
 ## Success
 
-- `rtl_test -t` finds the R820T / RTL2832U and does not hang on claim.
+- `rtl_test -t` opens the R820T / RTL2832U (no error -3, no busy).
 - A WAV is written under `samples/`.
-- `scripts/check_audio.py` reports RMS well above the silence floor
-  (default fail if RMS < about −50 dBFS for a 15–30 s clip on a live
-  NWR carrier — tune thresholds in `config/smoke.env` if your gain/PPM
-  differ).
-- Optional ear check: `play samples/*.wav` (sox) — continuous NWR voice
-  or the Wednesday ~noon MKX weekly test.
+- `scripts/check_audio.py` prints `PASS` (RMS/peak above floors in
+  `config/smoke.env`).
+- Optional ear check: `play samples/*.wav`.
 
 ## Not in this smoke test
 
 SAME / multimon-ng, clip cutting, SQLite, Whisper, systemd service,
-udev `/dev/nwr_sdr` binding. Those are Phase 1+ in the design brief.
+serial-based `/dev/nwr_sdr` binding. Those are Phase 1+ in the design brief.

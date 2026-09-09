@@ -4,7 +4,9 @@
 # this dongle for userspace SDR — do not run on the home-security machine.
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RULE=/etc/modprobe.d/blacklist-nwr-sdr.conf
+
 if [[ $EUID -ne 0 ]]; then
   echo "run as root: sudo $0" >&2
   exit 1
@@ -21,9 +23,8 @@ blacklist dvb_usb
 CONF
 
 echo "wrote $RULE"
-echo "unloading modules for this session (ignore errors if already free)..."
-modprobe -r dvb_usb_rtl28xxu 2>/dev/null || true
-modprobe -r rtl2832_sdr 2>/dev/null || true
-modprobe -r rtl2832 2>/dev/null || true
-modprobe -r dvb_usb_v2 2>/dev/null || true
-echo "done. if rtl_test still fails, reboot so the blacklist sticks."
+"$ROOT/scripts/unload_kernel_sdr.sh" || {
+  echo "session unload incomplete — reboot after blacklist so modules stay down"
+  exit 1
+}
+echo "done. if modules come back after reboot, check $RULE and initramfs."

@@ -1,0 +1,5 @@
+# librtlsdr access for RTL2838 / RTL2832U sticks (Protectli NWR Phase 0).
+# MODE 0666 so the first claim works without sudo once udev has reloaded;
+# GROUP plugdev is the usual Ubuntu path if you prefer group-only access.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", GROUP="plugdev", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2832", GROUP="plugdev", MODE="0666"
