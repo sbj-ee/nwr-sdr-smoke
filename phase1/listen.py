@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -25,6 +26,31 @@ from db import AlertDB
 from same import SameHeader, is_eom, parse_same_header
 
 log = logging.getLogger("nwr.listen")
+
+def pick_multimon_demod() -> str:
+    """Ubuntu 1.3.0 ships EAS (not SAME). Prefer env override, else EAS, else SAME."""
+    override = os.environ.get("MULTIMON_DEMOD", "").strip()
+    if override:
+        return override
+    help_txt = ""
+    for cmd in (
+        ["multimon-ng", "-h"],
+        ["multimon-ng", "-a", "__invalid__", "-t", "raw", "/dev/null"],
+    ):
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            help_txt += (proc.stdout or "") + "\n" + (proc.stderr or "")
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+    # "Available demodulators:" / "invalid mode" lines list tokens like EAS, AFSK1200, ...
+    tokens = set(re.findall(r"\b([A-Z]{3,10}[0-9]*)\b", help_txt))
+    for pref in ("EAS", "SAME"):
+        if pref in tokens:
+            return pref
+    # Last resort: Ubuntu packages historically use EAS for NWR SAME headers.
+    log.warning("could not detect multimon-ng demods; defaulting to EAS")
+    return "EAS"
+
 
 # Raw audio from rtl_fm: signed 16-bit LE mono
 BYTES_PER_SAMPLE = 2
@@ -236,34 +262,37 @@ def main(argv: list[str] | None = None) -> int:
 
     def read_multimon(proc: subprocess.Popen) -> None:
         assert proc.stdout is not None
-        for line in proc.stdout:
+        # stdout is binary (stdin must stay binary for raw s16le from rtl_fm)
+        for raw in proc.stdout:
             if stop.is_set():
                 break
             try:
-                on_same_line(line)
+                on_same_line(raw.decode("utf-8", errors="replace"))
             except Exception:
                 log.exception("SAME handler error")
 
     rtl_cmd = build_rtl_cmd(args)
-    mm_cmd = ["multimon-ng", "-a", "SAME", "-t", "raw", "/dev/stdin"]
+    demod = pick_multimon_demod()
+    mm_cmd = ["multimon-ng", "-a", demod, "-t", "raw", "/dev/stdin"]
     log.info("rtl: %s", " ".join(rtl_cmd))
-    log.info("multimon: %s", " ".join(mm_cmd))
+    log.info("multimon: %s (demod=%s)", " ".join(mm_cmd), demod)
     log.info("freq=%.3f MHz data_dir=%s fips_filter=%s", freq_mhz, args.data_dir, required_fips or "(all)")
 
     rtl = subprocess.Popen(rtl_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # stdin binary: raw PCM. Do NOT pass text=True (that made stdin a text buffer
+    # and crashed with TypeError: write() argument must be str, not bytes).
     mm = subprocess.Popen(
         mm_cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
+        bufsize=0,
     )
 
     def log_rtl_stderr() -> None:
         assert rtl.stderr is not None
         for line in rtl.stderr:
-            log.warning("rtl_fm: %s", line.rstrip())
+            log.warning("rtl_fm: %s", line.decode("utf-8", errors="replace").rstrip())
 
     threading.Thread(target=read_multimon, args=(mm,), daemon=True).start()
     threading.Thread(target=log_rtl_stderr, daemon=True).start()
@@ -283,11 +312,18 @@ def main(argv: list[str] | None = None) -> int:
                 log.error("rtl_fm stdout EOF — device lost or claim failed")
                 break
             ring.write(data)
+            if mm.poll() is not None:
+                log.error(
+                    "multimon-ng exited early (rc=%s) — check demod mode "
+                    "(Ubuntu 1.3.0 needs -a EAS, not SAME). Override: MULTIMON_DEMOD=EAS",
+                    mm.returncode,
+                )
+                break
             try:
                 mm.stdin.write(data)
                 mm.stdin.flush()
-            except BrokenPipeError:
-                log.error("multimon-ng stdin closed")
+            except (BrokenPipeError, ValueError, OSError) as e:
+                log.error("multimon-ng stdin dead (%s); stopping cleanly", e)
                 break
             with state_lock:
                 clip = active_clip

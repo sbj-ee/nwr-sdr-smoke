@@ -68,7 +68,7 @@ Success: `PASS: audio energy looks like live RF` and a WAV under `samples/`.
 ## Phase 1 — SAME + clip + SQLite
 
 Listens continuously on the configured NWR frequency, runs
-`multimon-ng -a SAME` on the demod audio, cuts a WAV from a few seconds
+`multimon-ng -a EAS` (Ubuntu 1.3.0; falls back to `SAME` if that demod exists) on the demod audio, cuts a WAV from a few seconds
 before the `ZCZC` header until `NNNN` (or `MAX_CLIP_S`), and inserts a
 row into SQLite (`data/alerts.db` by default). Dedups by
 event + FIPS + issue time + frequency within the purge window.
@@ -128,3 +128,13 @@ systemd/nwr-alerts.service
 
 No API tokens or passwords are required for Phase 0/1. Keep
 `config/*.env` out of git (gitignored).
+
+
+## Troubleshooting (Phase 1)
+
+- `invalid mode "SAME"`: Ubuntu `multimon-ng` 1.3.0 names the decoder **EAS**, not SAME.
+  The listener auto-selects `EAS`. Force with `MULTIMON_DEMOD=EAS` in `config/phase1.env`.
+- `TypeError: write() argument must be str, not bytes`: fixed in current main — multimon
+  stdin is binary. `git pull` and retry.
+- `multimon-ng exited early`: usually wrong `-a` mode or missing package. Install
+  `multimon-ng`, confirm with `multimon-ng -a EAS -h` / help text listing EAS.
