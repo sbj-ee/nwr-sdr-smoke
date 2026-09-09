@@ -1,0 +1,19 @@
+[Unit]
+Description=NWR SAME alert listener (Phase 1)
+Documentation=https://github.com/sbj-ee/nwr-sdr-smoke
+# Start with the user session; enable linger so it also comes up at boot
+# without a graphical login (see scripts/install_systemd_user.sh).
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/NOAA/nwr-sdr-smoke
+EnvironmentFile=-%h/NOAA/nwr-sdr-smoke/config/phase1.env
+ExecStart=/usr/bin/python3 %h/NOAA/nwr-sdr-smoke/phase1/listen.py
+Restart=on-failure
+RestartSec=5
+# Give USB/SDR a moment after boot before first claim
+ExecStartPre=/bin/sleep 3
+
+[Install]
+WantedBy=default.target

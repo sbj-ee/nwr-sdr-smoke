@@ -91,14 +91,37 @@ Query recent rows:
 ./scripts/query_alerts.sh
 ```
 
-Optional systemd (edit `User=` / paths first):
+### systemd (survive disconnect / reboot)
+
+Prefer a **user** unit as `stevebj` (clone path `~/NOAA/nwr-sdr-smoke`).
+Stop any foreground/`nohup` listener first. Kernel DVB blacklist should
+already be applied.
 
 ```bash
-sudo cp systemd/nwr-alerts.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now nwr-alerts.service
-journalctl -u nwr-alerts.service -f
+cd ~/NOAA/nwr-sdr-smoke && git pull
+# stop ad-hoc runs (install script also tries this)
+pkill -f 'phase1/listen.py' 2>/dev/null || true
+pkill -x rtl_fm 2>/dev/null || true
+./scripts/install_systemd_user.sh
 ```
+
+That installs `~/.config/systemd/user/nwr-alerts.service`, enables it,
+starts it, and turns on `loginctl` linger so it comes up at boot without
+a login session.
+
+```bash
+systemctl --user status nwr-alerts.service
+journalctl --user -u nwr-alerts.service -f
+systemctl --user restart nwr-alerts.service
+systemctl --user stop nwr-alerts.service
+```
+
+If the repo is not at `~/NOAA/nwr-sdr-smoke`, edit paths in
+`systemd/user/nwr-alerts.service` (or symlink the clone) then
+`FORCE_INSTALL=1 ./scripts/install_systemd_user.sh`.
+
+Optional system unit (root): `systemd/nwr-alerts.service` — copy to
+`/etc/systemd/system/`, `daemon-reload`, `enable --now`.
 
 ### Phase 1 success
 
@@ -118,12 +141,14 @@ scripts/blacklist_kernel_sdr.sh
 scripts/install_udev_rules.sh
 scripts/run_phase1.sh
 scripts/query_alerts.sh
+scripts/install_systemd_user.sh
 phase1/listen.py               Phase 1 supervisor
 phase1/same.py                 SAME parse
 phase1/db.py                   SQLite
 config/*.env.example
 udev/99-rtl-sdr-nwr.rules
-systemd/nwr-alerts.service
+systemd/user/nwr-alerts.service   (preferred)
+systemd/nwr-alerts.service        (system, optional)
 ```
 
 No API tokens or passwords are required for Phase 0/1. Keep
