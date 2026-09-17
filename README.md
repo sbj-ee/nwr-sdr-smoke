@@ -17,7 +17,7 @@ buy another dongle for this.
 |------|------|--------|
 | 0 | `rtl_test` + short WAV + energy score | done (`scripts/smoke_test.sh`) |
 | 1 | Continuous listen, multimon-ng SAME, clip cut, SQLite | done (`phase1/listen.py`) |
-| 2 | Local Whisper transcript | not started |
+| 2 | Local Whisper transcript | **spec only** — [docs/PHASE2.md](docs/PHASE2.md) (not implemented) |
 | 3 | Notify webhook / UI | not started |
 
 ## Packages (Protectli)
@@ -132,6 +132,17 @@ Optional system unit (root): `systemd/nwr-alerts.service` — copy to
 - `./scripts/query_alerts.sh` shows a row with event / FIPS / `audio_path`.
 - Re-broadcast within the purge window logs as duplicate (same `dedup_key`).
 
+## Phase 2 — local transcript (not implemented)
+
+Implementer instructions live in **[docs/PHASE2.md](docs/PHASE2.md)**.
+
+Summary: run Whisper / whisper.cpp (or fallback Vosk / faster-whisper) **async after**
+clip close; fill SQLite `transcript` + `transcript_conf`. LAN-only STT — no cloud.
+Config skeleton: `config/phase2.env.example`.
+
+**Do not start coding Phase 2** until Phase 1 SAME false-positive rate is acceptable
+(Stephen / CoS go).
+
 ## Layout
 
 ```
@@ -146,6 +157,7 @@ phase1/listen.py               Phase 1 supervisor
 phase1/same.py                 SAME parse
 phase1/db.py                   SQLite
 config/*.env.example
+docs/PHASE2.md                 Phase 2 STT implementer spec
 udev/99-rtl-sdr-nwr.rules
 systemd/user/nwr-alerts.service   (preferred)
 systemd/nwr-alerts.service        (system, optional)
