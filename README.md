@@ -18,7 +18,7 @@ buy another dongle for this.
 | 0 | `rtl_test` + short WAV + energy score | done (`scripts/smoke_test.sh`) |
 | 1 | Continuous listen, multimon-ng SAME, clip cut, SQLite | done (`phase1/listen.py`) |
 | 2 | Local Whisper transcript | done (`phase2/worker.py`) — disabled by default, see below |
-| 3 | Notify webhook / UI | not started |
+| 3 | Notify webhook / UI | **spec only** — [docs/PHASE3.md](docs/PHASE3.md) (not implemented) |
 
 ## Packages (Protectli)
 
@@ -200,6 +200,16 @@ Exits cleanly (no restart loop) if `STT_ENABLED` isn't `1` in `config/phase2.env
 - STT errors are logged and leave `transcript` null; they never crash the
   worker or touch `nwr-alerts.service`.
 
+## Phase 3 — notify + query (not implemented)
+
+Implementer instructions: **[docs/PHASE3.md](docs/PHASE3.md)**.
+
+Summary: standalone poller (same isolation pattern as Phase 2) POSTs eligible
+non-duplicate alerts to **ts-notify-hub** topic `house-nwr` (optional
+`house-urgent` for warnings) over Tailscale from Protectli. Suppress RWT/tests
+unless configured. CLI search by event / date / FIPS required; tiny web optional.
+Not a WEA replacement. Config skeleton: `config/phase3.env.example`.
+
 ## Layout
 
 ```
@@ -215,6 +225,7 @@ phase1/same.py                 SAME parse
 phase1/db.py                   SQLite
 config/*.env.example
 docs/PHASE2.md                 Phase 2 STT implementer spec
+docs/PHASE3.md                 Phase 3 notify + query implementer spec
 udev/99-rtl-sdr-nwr.rules
 systemd/user/nwr-alerts.service   (preferred)
 systemd/nwr-alerts.service        (system, optional)
