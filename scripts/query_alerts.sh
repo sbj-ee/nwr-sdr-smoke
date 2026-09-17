@@ -8,5 +8,7 @@ if [[ ! -f "$DB" ]]; then
   exit 1
 fi
 sqlite3 -header -column "$DB" \
-  "SELECT id, received_at, event, event_label, fips_list, audio_path, substr(same_header_raw,1,60) AS hdr
+  "SELECT id, received_at, event, event_label, fips_list, audio_path,
+          transcript_conf, substr(transcript,1,60) AS transcript_preview,
+          substr(same_header_raw,1,60) AS hdr
    FROM alerts ORDER BY id DESC LIMIT 20;"

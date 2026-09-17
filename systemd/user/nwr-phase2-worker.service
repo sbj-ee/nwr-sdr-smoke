@@ -1,0 +1,18 @@
+[Unit]
+Description=NWR STT transcript worker (Phase 2)
+Documentation=https://github.com/sbj-ee/nwr-sdr-smoke
+# Independent of nwr-alerts.service by design (docs/PHASE2.md): a stuck or
+# crashing STT run must not affect Phase 1 demod/SAME capture. Not ordered
+# After=nwr-alerts.service on purpose — it just polls the shared DB.
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/NOAA/nwr-sdr-smoke
+EnvironmentFile=-%h/NOAA/nwr-sdr-smoke/config/phase2.env
+ExecStart=/usr/bin/python3 %h/NOAA/nwr-sdr-smoke/phase2/worker.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

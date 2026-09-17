@@ -128,3 +128,27 @@ class AlertDB:
     def update_audio_path(self, alert_id: int, audio_path: str) -> None:
         self._conn.execute("UPDATE alerts SET audio_path = ? WHERE id = ?", (audio_path, alert_id))
         self._conn.commit()
+
+    def update_transcript(
+        self,
+        alert_id: int,
+        transcript: str,
+        transcript_conf: float | None,
+    ) -> None:
+        """Phase 2. Overwrites any prior transcript for this row (re-run = replace, not append)."""
+        self._conn.execute(
+            "UPDATE alerts SET transcript = ?, transcript_conf = ? WHERE id = ?",
+            (transcript, transcript_conf, alert_id),
+        )
+        self._conn.commit()
+
+    def find_pending_transcripts(self, limit: int = 20) -> list[sqlite3.Row]:
+        """Phase 2. Rows with a finalized clip that still need STT."""
+        return self._conn.execute(
+            """
+            SELECT id, audio_path FROM alerts
+            WHERE audio_path IS NOT NULL AND transcript IS NULL
+            ORDER BY id ASC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()

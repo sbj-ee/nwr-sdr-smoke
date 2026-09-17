@@ -1,5 +1,6 @@
 config/smoke.env
 config/phase1.env
+config/phase2.env
 samples/*
 !samples/.gitkeep
 data/

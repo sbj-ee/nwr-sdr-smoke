@@ -17,7 +17,7 @@ buy another dongle for this.
 |------|------|--------|
 | 0 | `rtl_test` + short WAV + energy score | done (`scripts/smoke_test.sh`) |
 | 1 | Continuous listen, multimon-ng SAME, clip cut, SQLite | done (`phase1/listen.py`) |
-| 2 | Local Whisper transcript | **spec only** — [docs/PHASE2.md](docs/PHASE2.md) (not implemented) |
+| 2 | Local Whisper transcript | done (`phase2/worker.py`) — disabled by default, see below |
 | 3 | Notify webhook / UI | not started |
 
 ## Packages (Protectli)
@@ -132,16 +132,73 @@ Optional system unit (root): `systemd/nwr-alerts.service` — copy to
 - `./scripts/query_alerts.sh` shows a row with event / FIPS / `audio_path`.
 - Re-broadcast within the purge window logs as duplicate (same `dedup_key`).
 
-## Phase 2 — local transcript (not implemented)
+## Phase 2 — local transcript
 
-Implementer instructions live in **[docs/PHASE2.md](docs/PHASE2.md)**.
+Spec: **[docs/PHASE2.md](docs/PHASE2.md)**. Implemented as a standalone poller
+(`phase2/worker.py`), separate from `nwr-alerts.service`, so a stuck or
+crashing STT run can never starve `rtl_fm`/`multimon-ng` or take down Phase 1.
+It polls `alerts` for rows with `audio_path` set and `transcript` still null,
+transcribes with local **whisper.cpp**, and writes `transcript` /
+`transcript_conf` back. No cloud STT.
 
-Summary: run Whisper / whisper.cpp (or fallback Vosk / faster-whisper) **async after**
-clip close; fill SQLite `transcript` + `transcript_conf`. LAN-only STT — no cloud.
-Config skeleton: `config/phase2.env.example`.
+### Setup (Protectli)
 
-**Do not start coding Phase 2** until Phase 1 SAME false-positive rate is acceptable
-(Stephen / CoS go).
+```bash
+sudo apt-get install -y build-essential cmake git
+git clone https://github.com/ggml-org/whisper.cpp.git ~/NOAA/whisper.cpp
+cmake -B ~/NOAA/whisper.cpp/build -DCMAKE_BUILD_TYPE=Release ~/NOAA/whisper.cpp
+cmake --build ~/NOAA/whisper.cpp/build -j"$(nproc)"
+bash ~/NOAA/whisper.cpp/models/download-ggml-model.sh base.en
+mkdir -p data/models
+cp ~/NOAA/whisper.cpp/models/ggml-base.en.bin data/models/ggml-base.en.bin
+
+cp config/phase2.env.example config/phase2.env
+# set STT_ENABLED=1 when ready; WHISPER_CPP_BIN already points at the build above
+```
+
+### Run
+
+```bash
+# offline: transcribe one WAV, print text + confidence (no DB write)
+python3 phase2/worker.py --file data/audio/20260916T170132Z-RWT.wav
+
+# offline: transcribe one WAV and write it to a specific alert row
+python3 phase2/worker.py --file path/to/clip.wav --alert-id 7
+
+# one pass over all pending rows (audio_path set, transcript null), then exit
+python3 phase2/worker.py --once
+
+# poll loop (what the systemd unit runs)
+python3 phase2/worker.py
+```
+
+### systemd (optional, not installed automatically)
+
+```bash
+install -m 0644 systemd/user/nwr-phase2-worker.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now nwr-phase2-worker.service
+```
+
+Exits cleanly (no restart loop) if `STT_ENABLED` isn't `1` in `config/phase2.env`.
+
+### Notes
+
+- Verified end-to-end through `phase2/worker.py --file` against a real
+  RWT clip (`data/audio/20260916T170132Z-RWT.wav`, `base.en`, Protectli's
+  Celeron N5105): whisper.cpp's own defaults (`beam_size=5`/`best_of=5`)
+  took **4m21s** wall clock for a ~90s clip and produced an accurate
+  transcript (`confidence: 0.753`; minor misses on a couple of county
+  names, expected for `base.en` on unusual proper nouns). Tried forcing
+  greedy decoding (`beam_size=1`/`best_of=1`) to cut latency — it was
+  **not** meaningfully faster (the CPU-bound encoder pass dominates, not
+  beam search) and quality was visibly worse: it dropped the entire
+  county-name read-out as `[static]`. `phase2/worker.py` keeps
+  whisper.cpp's defaults.
+- Confidence is the mean per-token probability whisper.cpp reports (`-ojf`
+  JSON), not a calibrated 0..1 score — treat it as relative, not absolute.
+- STT errors are logged and leave `transcript` null; they never crash the
+  worker or touch `nwr-alerts.service`.
 
 ## Layout
 
