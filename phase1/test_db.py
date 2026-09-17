@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quick unit checks for AlertDB Phase 2 methods (no SDR required)."""
+"""Quick unit checks for AlertDB Phase 2/3 methods (no SDR required)."""
 import tempfile
 from pathlib import Path
 
@@ -44,10 +44,33 @@ def main() -> None:
             ).fetchone()
             assert row["transcript"] == "second pass"
             assert row["transcript_conf"] is None
+
+            # --- Phase 3 ---
+            pending = db.find_pending_notifications()
+            assert len(pending) == 1
+            assert pending[0]["id"] == alert_id
+
+            db.mark_notified(alert_id, "house-nwr,house-urgent")
+            assert db.find_pending_notifications() == []
+            row = db._conn.execute(
+                "SELECT notified_at, notify_topic FROM alerts WHERE id = ?", (alert_id,)
+            ).fetchone()
+            assert row["notified_at"] is not None
+            assert row["notify_topic"] == "house-nwr,house-urgent"
+
+            counts = db.counts_since("2000-01-01T00:00:00+00:00")
+            assert len(counts) == 1
+            assert counts[0]["event"] == "RWT"
+            assert counts[0]["n"] == 1
         finally:
             db.close()
 
-    print("db.py Phase 2 methods OK")
+        # Re-opening the same DB file must not error on the Phase 3 migration
+        # (ALTER TABLE ADD COLUMN on columns that already exist).
+        db2 = AlertDB(Path(tmp) / "alerts.db")
+        db2.close()
+
+    print("db.py Phase 2/3 methods OK")
 
 
 if __name__ == "__main__":

@@ -29,12 +29,23 @@ CREATE TABLE IF NOT EXISTS alerts (
   transcript_conf REAL,
   source TEXT NOT NULL DEFAULT 'nwr-sdr',
   dedup_key TEXT,
+  notified_at TEXT,
+  notify_topic TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_received_at ON alerts(received_at);
 CREATE INDEX IF NOT EXISTS idx_alerts_event ON alerts(event);
 CREATE INDEX IF NOT EXISTS idx_alerts_dedup ON alerts(dedup_key);
 """
+
+# Columns added after the original SCHEMA shipped (Phase 3). New DBs get
+# them from CREATE TABLE above; existing Protectli DBs get them here via
+# idempotent ALTER TABLE (SQLite has no "ADD COLUMN IF NOT EXISTS" on the
+# 3.45 shipped with Ubuntu 24.04, so we catch "duplicate column").
+_MIGRATIONS = [
+    "ALTER TABLE alerts ADD COLUMN notified_at TEXT",
+    "ALTER TABLE alerts ADD COLUMN notify_topic TEXT",
+]
 
 
 def utc_now() -> str:
@@ -67,6 +78,13 @@ class AlertDB:
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        self._conn.commit()
+        for stmt in _MIGRATIONS:
+            try:
+                self._conn.execute(stmt)
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e).lower():
+                    raise
         self._conn.commit()
 
     def close(self) -> None:
@@ -152,3 +170,37 @@ class AlertDB:
             """,
             (limit,),
         ).fetchall()
+
+    def find_pending_notifications(self, limit: int = 20) -> list[sqlite3.Row]:
+        """Phase 3. Rows not yet through the notify decision (sent or suppressed).
+
+        Every row here is already a first-time insert — Phase 1's dedup
+        (`find_recent_dedup`) never creates a second row for a repeat
+        broadcast within the purge window, so there's no separate
+        "duplicate" flag to check here.
+        """
+        return self._conn.execute(
+            "SELECT * FROM alerts WHERE notified_at IS NULL ORDER BY id ASC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    def counts_since(self, since_iso: str) -> list[sqlite3.Row]:
+        """Phase 3 digest. Event counts for rows received at/after `since_iso`."""
+        return self._conn.execute(
+            """
+            SELECT event, event_label, severity, count(*) AS n
+            FROM alerts WHERE received_at >= ?
+            GROUP BY event ORDER BY n DESC
+            """,
+            (since_iso,),
+        ).fetchall()
+
+    def mark_notified(self, alert_id: int, topic: str) -> None:
+        """Phase 3. `topic` is a free-text record of what happened: the actual
+        topic(s) published to, or a `suppressed:<reason>` marker — either way
+        this stops the row from being re-evaluated on the next poll."""
+        self._conn.execute(
+            "UPDATE alerts SET notified_at = ?, notify_topic = ? WHERE id = ?",
+            (utc_now(), topic, alert_id),
+        )
+        self._conn.commit()

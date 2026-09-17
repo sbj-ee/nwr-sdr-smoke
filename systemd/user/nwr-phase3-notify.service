@@ -1,0 +1,19 @@
+[Unit]
+Description=NWR notify worker (Phase 3)
+Documentation=https://github.com/sbj-ee/nwr-sdr-smoke
+# Independent of nwr-alerts.service and nwr-phase2-worker.service by
+# design (docs/PHASE3.md): a hub outage or stuck HTTP call must not
+# affect capture or transcription. Not ordered After= either of them —
+# it just polls the shared DB.
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/NOAA/nwr-sdr-smoke
+EnvironmentFile=-%h/NOAA/nwr-sdr-smoke/config/phase3.env
+ExecStart=/usr/bin/python3 %h/NOAA/nwr-sdr-smoke/phase3/notify_worker.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

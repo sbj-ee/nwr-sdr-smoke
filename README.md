@@ -18,7 +18,7 @@ buy another dongle for this.
 | 0 | `rtl_test` + short WAV + energy score | done (`scripts/smoke_test.sh`) |
 | 1 | Continuous listen, multimon-ng SAME, clip cut, SQLite | done (`phase1/listen.py`) |
 | 2 | Local Whisper transcript | done (`phase2/worker.py`) — disabled by default, see below |
-| 3 | Notify webhook / UI | **spec only** — [docs/PHASE3.md](docs/PHASE3.md) (not implemented) |
+| 3 | Notify webhook / UI | done (`phase3/notify_worker.py`) — disabled, needs a hub token, see below |
 
 ## Packages (Protectli)
 
@@ -200,15 +200,106 @@ Exits cleanly (no restart loop) if `STT_ENABLED` isn't `1` in `config/phase2.env
 - STT errors are logged and leave `transcript` null; they never crash the
   worker or touch `nwr-alerts.service`.
 
-## Phase 3 — notify + query (not implemented)
+## Phase 3 — notify + query
 
-Implementer instructions: **[docs/PHASE3.md](docs/PHASE3.md)**.
+Spec: **[docs/PHASE3.md](docs/PHASE3.md)**. Implemented as a standalone poller
+(`phase3/notify_worker.py`), same isolation pattern as Phase 2 — it never
+imports or touches `phase1/listen.py`, so a hub outage or a stuck HTTP call
+can't affect capture or transcription. It polls `alerts` for rows that
+haven't been through a notify decision yet (`notified_at IS NULL`), gates
+them by severity/test/unknown rules, and POSTs eligible ones to
+**ts-notify-hub** topic `house-nwr` (+ `house-urgent` for warning-class) over
+Tailscale. Not a WEA replacement.
 
-Summary: standalone poller (same isolation pattern as Phase 2) POSTs eligible
-non-duplicate alerts to **ts-notify-hub** topic `house-nwr` (optional
-`house-urgent` for warnings) over Tailscale from Protectli. Suppress RWT/tests
-unless configured. CLI search by event / date / FIPS required; tiny web optional.
-Not a WEA replacement. Config skeleton: `config/phase3.env.example`.
+**This system is not a substitute for phone WEA or a battery SAME radio.**
+
+### Setup (Protectli)
+
+Tailscale is already up and `debian199` is reachable
+(`curl http://debian199.tailade1d3.ts.net:8787/health` → `{"ok":true}`).
+What's missing is a **publish-scoped bearer token**, minted on the hub —
+this implementer had no SSH access to `debian199` to mint one.
+
+```bash
+cp config/phase3.env.example config/phase3.env
+# mint a publish-scoped token on debian199 (ts-notify-hub admin CLI) and set:
+#   NOTIFY_TOKEN=<token>
+#   NOTIFY_ENABLED=1   # when ready
+```
+
+### Run
+
+```bash
+# dry-run: log the JSON that would be POSTed, no HTTP, no DB writes — safe with no token
+python3 phase3/notify_worker.py --once --dry-run
+
+# one pass over pending rows (notified_at IS NULL), then exit
+python3 phase3/notify_worker.py --once
+
+# poll loop (what the systemd unit runs)
+python3 phase3/notify_worker.py
+```
+
+### Query
+
+```bash
+./scripts/query_alerts.sh                                  # last 20 rows (back-compat)
+./scripts/query_alerts.sh --event TOR
+./scripts/query_alerts.sh --fips 055025
+./scripts/query_alerts.sh --since 2026-09-01 --until 2026-09-17
+./scripts/query_alerts.sh --event SVR --fips 055025 --since 2026-09-01
+```
+
+Delegates to `phase3/query.py` (parameterized SQL, no shell-injection risk).
+
+### systemd (optional, not installed automatically)
+
+```bash
+install -m 0644 systemd/user/nwr-phase3-notify.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now nwr-phase3-notify.service
+```
+
+Exits cleanly (no restart loop) if `NOTIFY_ENABLED` isn't `1` in `config/phase3.env`.
+
+### Severity gate
+
+| `NOTIFY_MIN_CLASS` | Notifies |
+|---|---|
+| `warning` (default) | `warning` only |
+| `watch` | `watch` or `warning` |
+| `advisory` | `advisory`, `watch`, or `warning` |
+| `all` | any class, still subject to test/unknown suppression |
+
+RWT/RMT/NPT/DMO (`event_class=test`) suppressed unless `NOTIFY_TESTS=1`.
+Unknown SAME codes (`event_class=other`) suppressed unless `NOTIFY_UNKNOWN=1`.
+Suppressed rows are marked `notify_topic=suppressed:<reason>` so they're
+not re-evaluated every poll, without ever POSTing to the hub.
+
+### Notes
+
+- Verified real HTTP contract against the live hub: with an invalid
+  token, `POST /v1/publish/house-nwr` returned `401 {"error":"unauthorized"}`
+  exactly as the spec's publish contract implies — confirms the endpoint
+  shape without needing a real token. On that failure the row is left
+  unnotified (retried next poll), never marked as sent.
+- Verified end-to-end against a synthetic warning/watch/test row set in a
+  scratch DB (not the real `alerts.db`): warning-class correctly built a
+  dual `[house-nwr, house-urgent]` payload with the Dane FIPS flag and
+  transcript preview; watch was suppressed under the default
+  `NOTIFY_MIN_CLASS=warning`; RWT was suppressed as a test. Dry-run is
+  idempotent (repeated runs produce identical output, nothing marked).
+- Migrated the live production `data/alerts.db` (`notified_at`,
+  `notify_topic` columns) while `nwr-alerts.service` and
+  `nwr-phase2-worker.service` were both running; both stayed `active`
+  throughout, row count unchanged.
+- Every row in `alerts` is already a first-time insert — Phase 1's dedup
+  never creates a second row for a repeat broadcast within the purge
+  window — so there's no separate duplicate check; `notified_at` alone
+  prevents re-notifying.
+- No real (non-test) alert or valid hub token yet, so the **live** exit
+  criterion (real alert → hub POST → visible to a subscribed client) is
+  still open. `NOTIFY_ENABLED=0` until a token is set.
 
 ## Layout
 
@@ -223,11 +314,18 @@ scripts/install_systemd_user.sh
 phase1/listen.py               Phase 1 supervisor
 phase1/same.py                 SAME parse
 phase1/db.py                   SQLite
+phase2/worker.py                Phase 2 STT poller
+phase2/stt_whisper_cpp.py        whisper.cpp subprocess wrapper
+phase3/notify_worker.py         Phase 3 notify poller
+phase3/notify.py                 eligibility / payload / hub HTTP
+phase3/query.py                  CLI search (event/date/FIPS)
 config/*.env.example
 docs/PHASE2.md                 Phase 2 STT implementer spec
 docs/PHASE3.md                 Phase 3 notify + query implementer spec
 udev/99-rtl-sdr-nwr.rules
-systemd/user/nwr-alerts.service   (preferred)
+systemd/user/nwr-alerts.service          (preferred)
+systemd/user/nwr-phase2-worker.service   (optional)
+systemd/user/nwr-phase3-notify.service   (optional)
 systemd/nwr-alerts.service        (system, optional)
 ```
 
